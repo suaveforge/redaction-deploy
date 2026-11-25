@@ -1,0 +1,39 @@
+name: Redaction domain verification
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/domain-check.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+  pages: read
+jobs:
+  binding:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify actual Pages custom domain
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/pages" --jq '{cname,build_type,status,html_url,https_enforced}'
+          gh api "repos/$GITHUB_REPOSITORY/pages" --jq '.cname' | grep -Fxq redaction.suaveforge.com
+  dns:
+    needs: binding
+    runs-on: [self-hosted, Linux, X64, server123, suaveforge-deploy, suaveforge-org]
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure the verified Redaction Pages hostname without replacing other records
+        run: bash scripts/configure-frontend-dns.sh
+  verify:
+    needs: dns
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify public DNS and HTTPS
+        run: |
+          dig +short redaction.suaveforge.com CNAME
+          dig +short redaction.suaveforge.com CNAME | grep -Fxq suaveforge.github.io.
+          curl -fsS --connect-timeout 8 --max-time 20 https://redaction.suaveforge.com/ | grep -Fq 'SuaveForge Redaction'
+          echo REDACTION_PUBLIC_FRONTEND_HTTPS=PASS
