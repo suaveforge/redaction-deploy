@@ -25,14 +25,12 @@ jobs:
           node --check static/app.js
           test "$(cat CNAME)" = redaction.suaveforge.com
           test -s RELEASE_SOURCE
-      - name: Enable Pages if not yet configured
+      - name: Verify repository administrator has enabled Pages and bound the hostname
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if ! gh api "repos/$GITHUB_REPOSITORY/pages" >/tmp/pages.json 2>/dev/null; then
-            gh api --method POST "repos/$GITHUB_REPOSITORY/pages" -f build_type=workflow
-          fi
-          gh api --method PUT "repos/$GITHUB_REPOSITORY/pages" -f build_type=workflow -f cname=redaction.suaveforge.com
+          gh api "repos/$GITHUB_REPOSITORY/pages" >/tmp/redaction-pages.json
+          jq -e '.build_type=="workflow" and .cname=="redaction.suaveforge.com"' /tmp/redaction-pages.json >/dev/null
       - uses: actions/configure-pages@v5
       - name: Stage static files only
         run: |
@@ -44,3 +42,17 @@ jobs:
           path: /tmp/redaction-public
       - id: deployment
         uses: actions/deploy-pages@v4
+  dns:
+    needs: publish
+    runs-on: [self-hosted, Linux, X64, server123, suaveforge-deploy, suaveforge-org]
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify Pages hostname and product API before creating DNS
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/pages" --jq '.cname' | grep -Fxq redaction.suaveforge.com
+          curl -fsS --max-time 15 https://api-redaction.suaveforge.com:19447/api/health | grep -q '"worker":true'
+          bash scripts/configure-frontend-dns.sh
