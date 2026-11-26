@@ -2,8 +2,10 @@
 const $=id=>document.getElementById(id);
 const E=(tag,txt,cls)=>{const n=document.createElement(tag);if(txt!=null)n.textContent=txt;if(cls)n.className=cls;return n};
 const C=(parent,...nodes)=>{for(const n of nodes.flat())if(n)parent.append(n);return parent};
-const API_BASE=location.hostname==="redaction.suaveforge.com"?"https://api-redaction.suaveforge.com:19447":"";
-let account=null,csrf="",current="overview",selectedDoc=null,pageIndex=0,selectedFinding=null,drawMode=false,detailData=null,refreshTimer=null,docsFilter={q:"",status:""};
+const DEMO=location.pathname.startsWith("/demo/");
+const API_BASE=DEMO?"/demo":location.hostname==="redaction.suaveforge.com"?"https://api-redaction.suaveforge.com:19447":"";
+if(DEMO){const banner=E("div","Demonstration workspace · synthetic documents only","demo-banner");document.body.prepend(banner);document.body.classList.add("demo-workspace")}
+let account=null,csrf="",current="overview",selectedDoc=null,pageIndex=0,selectedFinding=null,drawMode=false,detailData=null,refreshTimer=null,docsFilter={q:"",status:"",caseType:""};
 const statuses={queued:"Queued",processing:"Processing",review:"In review",approval:"Awaiting approval",releasing:"Preparing release",releasing_work:"Preparing release",released:"Released",failed:"Processing failed",accepted:"Accepted",rejected:"Rejected",pending:"Unresolved"};
 const roles={administrator:"Administrator",reviewer:"Reviewer",approver:"Approver",intake:"Intake"};
 const status=s=>E("span",statuses[s]||s,"badge "+s);
@@ -52,17 +54,32 @@ function uploadModal(){
  const ref=input("case_ref");ref.required=true;ref.maxLength=100;
  modal("Add documents",form([labelled("Case reference",ref),labelled("Request type",select("case_type",["FOI","SAR","Legal disclosure","Information governance"])),labelled("Source documents",file),E("p","Up to 20 files per batch. PDF, Word, text, images, scanned pages and email with supported attachments.","muted")],"Upload and analyse",async fd=>{await api("/api/documents","POST",fd);notify("Documents queued for analysis.");navigate("documents")}));
 }
+function chartFilter(stage="",caseType=""){docsFilter={q:"",status:stage,caseType};navigate("documents")}
+const palette={queued:"#64748b",processing:"#3974a3",review:"#bd862b",approval:"#8a68af",releasing:"#4979a5",releasing_work:"#4979a5",released:"#158579",failed:"#ba525a"};
+function workloadChart(m){
+ if(!m.total)return E("div","No documents recorded. Add documents to populate the workload chart.","empty");
+ const wrap=E("div",null,"workload-chart"),ring=E("div",null,"ring-wrap"),svg=document.createElementNS("http://www.w3.org/2000/svg","svg");svg.setAttribute("viewBox","0 0 180 180");svg.setAttribute("role","img");svg.setAttribute("aria-label","Document workload by stage");
+ const circle=(stroke,offset,len)=>{const el=document.createElementNS(svg.namespaceURI,"circle");for(const [k,v] of Object.entries({cx:90,cy:90,r:67,fill:"none",stroke,"stroke-width":21,"stroke-dasharray":len+" "+(421-len),"stroke-dashoffset":-offset,transform:"rotate(-90 90 90)"}))el.setAttribute(k,String(v));return el};
+ svg.append(circle("#e9eff1",0,421));let offset=0;const legend=E("div",null,"chart-legend");
+ for(const [stage,n] of Object.entries(m.statuses).filter(x=>x[1]>0)){const colour=palette[stage]||"#64748b",len=n/m.total*421,c=circle(colour,offset,Math.max(0,len-2));offset+=len;c.setAttribute("tabindex","0");c.setAttribute("role","button");c.setAttribute("aria-label",(statuses[stage]||stage)+": "+n+" documents");c.addEventListener("click",()=>chartFilter(stage));c.addEventListener("keydown",e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();chartFilter(stage)}});svg.append(c);const b=btn("",()=>chartFilter(stage),"chart-key");b.dataset.stage=stage;const dot=E("i");dot.style.background=colour;b.append(dot,E("span",statuses[stage]||stage),E("strong",String(n)));legend.append(b)}
+ ring.append(svg,C(E("div",null,"ring-label"),E("b",String(m.total)),E("span","documents")));wrap.append(ring,legend);return wrap
+}
+function caseChart(m){
+ const rows=m.cases.filter(c=>c.count>0);if(!rows.length)return E("div","No request types recorded.","empty");
+ const max=Math.max(...rows.map(c=>c.count)),wrap=E("div",null,"case-chart");
+ for(const c of rows){const row=btn("",()=>chartFilter("",c.case_type),"case-row");row.dataset.caseType=c.case_type;const track=E("div",null,"lollipop-track"),line=E("div",null,"lollipop-line");line.style.width=100*c.count/max+"%";track.append(line);row.append(E("span",c.case_type),track,E("strong",String(c.count)));wrap.append(row)}
+ return wrap
+}
 async function overview(v){const m=await api("/api/metrics");if(current!==v)return;const q=E("div");q.append(pageHead("Overview","Document workload and release activity",canIntake()?[btn("Add documents",uploadModal,"primary")]:[]));
- const metrics=E("div",null,"metrics");for(const [label,value] of [["Documents",m.total],["In review",(m.statuses.review||0)+(m.statuses.approval||0)],["Pages processed",m.pages],["Released",m.statuses.released||0]])metrics.append(C(E("div",null,"metric"),E("span",label),E("b",String(value))));q.append(metrics);
- function bars(rows){if(!rows.length)return E("div","No activity recorded.","empty");const max=Math.max(1,...rows.map(x=>x[1]));const d=E("div");for(const [l,n] of rows){const f=E("div",null,"barfill");f.style.width=(100*n/max)+"%";d.append(C(E("div",null,"barrow"),E("span",l),C(E("div",null,"bartrack"),f),E("b",String(n))))}return d}
- q.append(C(E("div",null,"split"),panel("Workload by stage",bars(Object.entries(m.statuses).map(([s,n])=>[statuses[s]||s,n]))),panel("Request types",bars(m.cases.map(c=>[c.case_type,c.count])))));
+ const metrics=E("div",null,"metrics");for(const [label,value,subtitle] of [["Documents",m.total,"All requests"],["In review",(m.statuses.review||0)+(m.statuses.approval||0),"Review and approval"],["Pages processed",m.pages,"Analysed source pages"],["Released",m.statuses.released||0,"Approved releases"]])metrics.append(C(E("div",null,"metric"),E("span",label),E("b",String(value)),E("small",subtitle)));q.append(metrics);
+ q.append(C(E("div",null,"split"),panel("Workload by stage",workloadChart(m),E("p","Select a stage to view its documents.","chart-hint")),panel("Request types",caseChart(m),E("p","Select a request type to open its queue.","chart-hint"))));
  q.append(panel("Release performance",C(E("div",null,"details-grid"),C(E("div"),E("span","Accepted redactions"),E("b",String(m.accepted))),C(E("div"),E("span","Mean turnaround"),E("b",m.mean_turnaround_seconds==null?"Not yet recorded":Math.round(m.mean_turnaround_seconds/60)+" min")))));
- q.append(btn("Open document queue",()=>navigate("documents")));show(q)}
+ q.append(btn("Open document queue",()=>chartFilter()));show(q)}
 function openDoc(id){current="detail";selectedDoc=id;pageIndex=0;selectedFinding=null;drawMode=false;render().catch(e=>notify(e.message))}
 async function documents(v){const d=await api("/api/documents");if(current!==v)return;const root=E("div");root.append(pageHead("Documents","Intake, review and release",canIntake()?[btn("Add documents",uploadModal,"primary")]:[]));
- const q=input("search","search",docsFilter.q);q.placeholder="Search documents or case reference";q.setAttribute("aria-label","Search documents");const filter=select("status",[["","All stages"],...Object.entries(statuses).filter(([s])=>!["accepted","pending","rejected"].includes(s))],docsFilter.status);const results=E("div");
- const draw=()=>{docsFilter={q:q.value,status:filter.value};const match=d.documents.filter(x=>(!filter.value||x.status===filter.value)&&(!q.value||[x.name,x.case_ref,x.case_type].join(" ").toLowerCase().includes(q.value.toLowerCase())));results.replaceChildren(E("p",match.length+" documents","muted"),table(["Document","Case reference","Request type","Stage","Updated",""],match.map(x=>[btn(x.name,()=>openDoc(x.id),"linkbutton"),x.case_ref,x.case_type,status(x.status),fmt(x.updated),btn("Open",()=>openDoc(x.id))])))};
- q.addEventListener("input",draw);filter.addEventListener("change",draw);root.append(panel(null,C(E("div",null,"toolbar"),q,filter),results));draw();show(root)}
+ const q=input("search","search",docsFilter.q);q.placeholder="Search documents or case reference";q.setAttribute("aria-label","Search documents");const filter=select("status",[["","All stages"],...Object.entries(statuses).filter(([s])=>!["accepted","pending","rejected"].includes(s))],docsFilter.status);const caseFilter=select("case_type",[["","All request types"],"FOI","SAR","Legal disclosure","Information governance"],docsFilter.caseType);const results=E("div");
+ const draw=()=>{docsFilter={q:q.value,status:filter.value,caseType:caseFilter.value};const match=d.documents.filter(x=>(!filter.value||x.status===filter.value)&&(!caseFilter.value||x.case_type===caseFilter.value)&&(!q.value||[x.name,x.case_ref,x.case_type].join(" ").toLowerCase().includes(q.value.toLowerCase())));results.replaceChildren(E("p",match.length+" documents","muted"),table(["Document","Case reference","Request type","Stage","Updated",""],match.map(x=>[btn(x.name,()=>openDoc(x.id),"linkbutton"),x.case_ref,x.case_type,status(x.status),fmt(x.updated),btn("Open",()=>openDoc(x.id))])))};
+ q.addEventListener("input",draw);filter.addEventListener("change",draw);caseFilter.addEventListener("change",draw);root.append(panel(null,C(E("div",null,"toolbar"),q,filter,caseFilter,btn("Clear filters",()=>{q.value=filter.value=caseFilter.value="";draw()})),results));draw();show(root)}
 async function detail(id){const d=await api("/api/documents/"+id);if(current!=="detail"||selectedDoc!==id)return;detailData=d;const doc=d.document;const root=E("div");root.append(pageHead(doc.name,doc.case_ref+" / "+doc.case_type,[btn("Back to documents",()=>navigate("documents"))]));
  const top=panel(null,C(E("div",null,"toolbar"),status(doc.status),E("span","Updated "+fmt(doc.updated),"muted")));if(doc.error)top.append(E("p",doc.error,"error"));if(doc.reason)top.append(E("p",doc.reason,"note"));root.append(top);
  const base="/api/documents/"+id;
